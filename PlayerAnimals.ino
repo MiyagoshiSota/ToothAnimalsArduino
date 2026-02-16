@@ -1,125 +1,114 @@
-#define SENSER_MAX 4
+#define SENSOR_MAX 4
+#define MAX_VOLT 200
 
-String line;   // 受信文字列
-int line_len;  // 受信文字列の長さ
-int value;
-long num;  // 受信整数
-int i[SENSER_MAX], j[SENSER_MAX];
-bool tooth_array[SENSER_MAX];
-bool nonDecay;
-const int MAXVOLT = 200;
-int sensorPins[SENSER_MAX] = { A0, A1, A2, A3 };  // センサーピンの配列
+// ピン設定
+// {DecayLED(汚れ), CleanLED(きれい)} のペア
+const int ledPins[SENSOR_MAX][2] = {
+  {2, 3}, // Sensor 0対応
+  {4, 5}, // Sensor 1対応
+  {6, 7}, // Sensor 2対応
+  {8, 9}  // Sensor 3対応
+};
+
+const int sensorPins[SENSOR_MAX] = { A0, A1, A2, A3 };
+
+// ステータス変数
+// 名前をわかりやすく変更
+int levelClean[SENSOR_MAX];
+int levelDecay[SENSOR_MAX];
+bool isDecayed[SENSOR_MAX];
+
+// 一時変数
+bool nonDecayState = true;
 
 void setup() {
   Serial.begin(9600);
-  pinMode(2, OUTPUT);
-  pinMode(3, OUTPUT);
-  pinMode(4, OUTPUT);
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
-  pinMode(7, OUTPUT);
-  pinMode(8, OUTPUT);
-  pinMode(9, OUTPUT);
-  pinMode(A0, INPUT);
-  pinMode(A1, INPUT);
-  pinMode(A2, INPUT);
-  pinMode(A3, INPUT);
 
-
-  nonDecay = true;
-
-  for (int k = 0; k < SENSER_MAX; k++) {
-    i[k] = MAXVOLT;
-    j[k] = 0;
-    tooth_array[k] = false;
+  // ピンモード設定をループ化
+  for (int k = 0; k < SENSOR_MAX; k++) {
+    pinMode(ledPins[k][0], OUTPUT);
+    pinMode(ledPins[k][1], OUTPUT);
+    pinMode(sensorPins[k], INPUT);
+    
+    // 初期化
+    levelClean[k] = MAX_VOLT;
+    levelDecay[k] = 0;
+    isDecayed[k] = false;
   }
 }
 
 void loop() {
-  //虫歯に変更
   if (Serial.available() > 0) {
-    // シリアル通信で1行（改行コードまで）読み込む
-    line = Serial.readStringUntil('\n');
-    // 文字列の長さを取得する
-    line_len = line.length();
-    // 文字列の長さが1文字以上の場合
-    if (line_len > 0) {
-      // 文字列を整数に変換する
-      num = line.toInt();
+    int targetTooth = Serial.parseInt(); 
 
-      // numの範囲チェック
-      if (num >= 0 && num < SENSER_MAX) {
-        for (int k = 0; k < SENSER_MAX; k++) {
-          if (k == num) {
-            i[k] = 0;
-            j[k] = MAXVOLT;
-            tooth_array[num] = true;
-          } else {
-            i[k] = MAXVOLT;
-            j[k] = 0;
-            tooth_array[k] = false;
-          }
+    // 改行コードなどが残っている場合のためにバッファをクリア
+    while(Serial.available()) { Serial.read(); }
+
+    if (targetTooth >= 0 && targetTooth < SENSOR_MAX) {
+      for (int k = 0; k < SENSOR_MAX; k++) {
+        if (k == targetTooth) {
+          // ターゲットを虫歯にする
+          levelClean[k] = 0;
+          levelDecay[k] = MAX_VOLT;
+          isDecayed[k] = true;
+        } else {
+          // 他をリセット
+          levelClean[k] = MAX_VOLT;
+          levelDecay[k] = 0;
+          isDecayed[k] = false;
         }
       }
     }
   }
 
-  nonDecay = true;  // ループの前に初期化
+  // センサー読み取りと状態更新
+  nonDecayState = true; // とりあえず「虫歯なし」と仮定して、ループ内でチェック
 
-  //以下で圧力センサーの値から消えるまで計算
-  for (int k = 0; k < SENSER_MAX; k++) {
-    if (tooth_array[k] == true) {
-      nonDecay = false;
+  for (int k = 0; k < SENSOR_MAX; k++) {
+    if (isDecayed[k]) {
+      nonDecayState = false; // 虫歯が見つかった
 
-      num = analogRead(sensorPins[k]);  // 正しいアナログピンを読む
-      value = (num / 35);
-      if (num != 0 && value > 2) {
-        i[k] += value;
-        j[k] -= value;
+      int sensorVal = analogRead(sensorPins[k]);
+      int pressure = sensorVal / 35; // スケーリング
+
+      // 圧力が一定以上なら治療進行
+      if (sensorVal != 0 && pressure > 2) {
+        levelClean[k] += pressure;
+        levelDecay[k] -= pressure;
       }
 
-      if (i[k] >= MAXVOLT) {
-        i[k] = MAXVOLT;
-      }
+      // 範囲制限
+      if (levelClean[k] > MAX_VOLT) levelClean[k] = MAX_VOLT;
+      if (levelDecay[k] < 0)       levelDecay[k] = 0;
 
-      if (j[k] <= 0) {
-        j[k] = 0;
-      }
-
-      if (j[k] == 0 && i[k] == MAXVOLT) {
-        tooth_array[k] = false;
-        nonDecay = true;
-
+      // 完治判定
+      if (levelDecay[k] == 0 && levelClean[k] == MAX_VOLT) {
+        isDecayed[k] = false;
+        // 完治の瞬間だけここでリセット判定はできないので（他が虫歯かもしれない）、次のループから反映
         Serial.print(k);
         Serial.print(",");
-        Serial.println(MAXVOLT);
+        Serial.println(MAX_VOLT);
       } else {
+        // 治療中
         Serial.print(k);
         Serial.print(",");
-        Serial.println(i[k]);
+        Serial.println(levelClean[k]);
       }
     }
   }
 
-  if (nonDecay) {
+  // 誰も虫歯でない場合
+  if (nonDecayState) {
     Serial.print(-1);
     Serial.print(",");
     Serial.println(0);
   }
 
-  analogWrite(2, j[0]);
-  analogWrite(3, i[0]);
-
-  analogWrite(4, j[1]);
-  analogWrite(5, i[1]);
-
-  analogWrite(6, j[2]);
-  analogWrite(7, i[2]);
-
-  analogWrite(8, j[3]);
-  analogWrite(9, i[3]);
+  // LED出力
+  for (int k = 0; k < SENSOR_MAX; k++) {
+    analogWrite(ledPins[k][0], levelDecay[k]); // 赤（汚れ）
+    analogWrite(ledPins[k][1], levelClean[k]); // 青/白（きれい）
+  }
 
   delay(25);
 }
-
-
